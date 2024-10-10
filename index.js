@@ -1,35 +1,63 @@
 const puppeteer = require('puppeteer');
+const fs = require('fs');
 
-function Program(code, name, name_chi, uni, required_elective_1, required_elective_2, required_elective_3, preferred_subjects) {
+function Program(code, name_short, name, name_chi, uni, required_elective, jupaslink) {
     this.code = code;
+    this.name_short = name_short;
     this.name = name;
     this.name_chi = name_chi;
     this.uni = uni;
-    this.required_elective_1 = required_elective_1;
-    this.required_elective_2 = required_elective_2;
-    this.required_elective_3 = required_elective_3;
-    this.preferred_subjects = preferred_subjects;
+    this.required_elective = required_elective;
+    this.jupaslink = jupaslink;
+}
+
+function capitalizeFirstWord(sentense) {
+    const words = sentense.split(" ");
+
+    for (let i = 0; i < words.length; i++) {
+        if (words[i] == "AND") {
+            words[i] = words[i].toLowerCase();
+        } else if (words[i][0] == "(") {
+            words[i] = words[i].toUpperCase();
+        } else {
+        words[i] = words[i][0].toUpperCase() + words[i].substring(1).toLowerCase();
+        }
+    }
+
+    return words.join(" ");
+}
+
+function quoteData(data) {
+    return `"${data.replace(/"/g, '""')}"`; // Double quote the data before exporting to CSV file
 }
 
 async function getElectives(page, url) {
     await page.goto(url);
 
     const tableData = await page.evaluate(() => {
-    const table = document.querySelector('table.dsereg_table.dsereg_table-elective');
-    const rows = table.querySelectorAll('tbody tr');
+        const table = document.querySelector('table.dsereg_table.dsereg_table-elective');
+        if (!table) {
+            return null; // Return null if the table is not found
+        }
 
-    const data = new Set();
-    rows.forEach(row => {
-      const elective = row.querySelector('.dsereg-sub').innerText.trim();
-      if (elective !== 'Or' && !elective.includes('ANY 1 SUBJECT')) {
-        data.add(elective);
-      }
+        const rows = table.querySelectorAll('tbody tr');
+        const data = new Set();
+
+        rows.forEach(row => {
+            const elective = row.querySelector('.dsereg-sub').innerText.trim();
+            if (elective !== 'Or' && !elective.includes('ANY') && !elective.includes('of') && !elective.includes('EXTENDED')) {
+                data.add(elective);
+            }
+        });
+
+        return Array.from(data);
     });
 
-    return Array.from(data);
-  });
+    if (!tableData) {
+        return null; // Return null if no data is scraped
+    }
 
-  console.log(tableData);
+    return tableData;
 }
 
 
@@ -61,54 +89,87 @@ async function checkAvailableProgram(page, url) {
     }
 }
 
-async function getProgramDetail(page, schoolLinks) {
+async function getProgramDetail(page) {
     const programs = []; // List of Program objects
-    const index = 1;
-    const selector_code = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-no > a`;
-    const selector_shortname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-sn`;
-    const selector_engname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-ft`;
-    const selector_chiname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-ft > span`;
+    const schoolLinks = getSchoolLinks();
+    const schoolnames = ["cityuhk", "hkbu", "lingnanu", "cuhk", "eduhk", "polyu", "hkust", "hku", "hkmu"];
+    const schoolNames = ["CityU", "HKBU", "LU", "CUHK", "EdUHK", "PolyU", "HKUST", "HKU", "MU"];
 
-    try {
-        await page.goto(schoolLinks[0]);
+    for (let i = 0; i < schoolLinks.length; i++) {
+        try {
+            const numOfProgram = await checkAvailableProgram(page, schoolLinks[i]);
+            let index = 1;
+            while (index < numOfProgram + 1) {
+                await page.goto(schoolLinks[i]);
 
-        const programData = await page.evaluate((sel_code, sel_shortname, sel_engname, sel_chiname) => {
-            const code = document.querySelector(sel_code)?.innerText.trim() || 'N/A';
-            const shortname = document.querySelector(sel_shortname)?.innerText.trim() || 'N/A';
-            const engname = document.querySelector(sel_engname)?.innerText.split('\n')[0].trim() || 'N/A';
-            const chiname = document.querySelector(sel_chiname)?.innerText.trim() || 'N/A';
+                const selector_code = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-no > a`;
+                const selector_shortname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-sn`;
+                const selector_engname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-ft`;
+                const selector_chiname = `#main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(${index}) > td.c-ft > span`;
+            
+                const programData = await page.evaluate((sel_code, sel_shortname, sel_engname, sel_chiname) => {
+                    const code = document.querySelector(sel_code)?.innerText.trim() || 'N/A';
+                    const shortname = document.querySelector(sel_shortname)?.innerText.trim() || 'N/A';
+                    const engname = document.querySelector(sel_engname)?.innerText.split('\n')[0].trim() || 'N/A';
+                    const chiname = document.querySelector(sel_chiname)?.innerText.trim() || 'N/A';
+        
+                    return { code, shortname, engname, chiname };
+                }, selector_code, selector_shortname, selector_engname, selector_chiname);
 
-            return { code, shortname, engname, chiname };
-        }, selector_code, selector_shortname, selector_engname, selector_chiname);
+                const uni = schoolNames[i];
+                const url = `https://www.jupas.edu.hk/tc/programme/${schoolnames[i]}/${programData.code}/`;
+                const electives = await getElectives(page, url);
+                for (let j = 0; j < electives.length; j++) {
+                    electives[j] = capitalizeFirstWord(electives[j]);
+                }
 
-        const program = new Program(programData.code, programData.shortname, programData.engname, programData.chiname, 'Elective 1', 'Elective 2', 'Elective 3', ['Subject 1', 'Subject 2', 'Subject 3']);
-        programs.push(program);
+                const program = new Program(
+                    programData.code, 
+                    programData.shortname, 
+                    programData.engname, 
+                    programData.chiname, 
+                    uni, 
+                    electives, 
+                    url);
 
-        console.log(programData);
-    } catch (error) {
-        console.error('An error occurred:', error);
+                console.log(program);
+                programs.push(program);
+
+                index++;
+            }
+        } catch (error) {
+            console.log(error);
+        }
     }
+    return programs;
+}
+
+function exportToCSV(programs) {
+    const header = ['Code', 'Short Name', 'English Name', 'Chinese Name', 'University', 'Required Electives', 'JUPAS Link'];
+    const rows = programs.map(program => [
+        program.code,
+        program.name_short,
+        quoteData(program.name),
+        quoteData(program.name_chi),
+        program.uni,
+        program.required_elective.join('; '), // Joining electives with semicolons
+        program.jupaslink
+    ]);
+
+    const csvContent = [header, ...rows].map(e => e.join(",")).join("\n");
+
+    // Write to a CSV file with UTF-8 encoding
+    fs.writeFileSync('programs.csv', "\uFEFF" + csvContent, 'utf8');
+    console.log('CSV file has been saved as programs.csv.');
 }
 
 (async () => {
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
 
-    const schoolLinks = getSchoolLinks();
-    const numOfProgram = [];
-    for (let i = 0; i <schoolLinks.length; i++) {
-        const num = await checkAvailableProgram(page, schoolLinks[i]);
-        numOfProgram.push(num);
-        console.log(`${i+1}: ${num} programs found in ${schoolLinks[i]}`)
-    }
-
-    // const programs = await getProgramDetail(page, schoolLinks);
-    // console.log(programs[0]);
-
+    const programs = await getProgramDetail(page);
+    console.log(programs.length);
     await browser.close();
-})();
 
-// #main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(1) > td.c-no > a
-// #main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(2) > td.c-no > a
-// #main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(1)
-// #main > div.container > article > div.pageContent > div.program_list > table > tbody > tr:nth-child(59)
+    exportToCSV(programs);
+})();
