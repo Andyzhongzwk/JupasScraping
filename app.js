@@ -1,3 +1,5 @@
+// The version which worked on Bigexam, have given up
+
 const puppeteer = require('puppeteer');
 
 (async () => {
